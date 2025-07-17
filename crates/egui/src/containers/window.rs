@@ -8,8 +8,8 @@ use epaint::{CornerRadiusF32, RectShape};
 use crate::collapsing_header::CollapsingState;
 use crate::*;
 
-use super::scroll_area::ScrollBarVisibility;
-use super::{area, resize, Area, Frame, Resize, ScrollArea};
+use super::scroll_area::{ScrollBarVisibility, ScrollSource};
+use super::{Area, Frame, Resize, ScrollArea, area, resize};
 
 /// Builder for a floating window which can be dragged, closed, collapsed, resized and scrolled (off by default).
 ///
@@ -376,14 +376,6 @@ impl<'open> Window<'open> {
         self
     }
 
-    /// Enable/disable horizontal/vertical scrolling. `false` by default.
-    #[deprecated = "Renamed to `scroll`"]
-    #[inline]
-    pub fn scroll2(mut self, scroll: impl Into<Vec2b>) -> Self {
-        self.scroll = self.scroll.scroll(scroll);
-        self
-    }
-
     /// Enable/disable horizontal scrolling. `false` by default.
     #[inline]
     pub fn hscroll(mut self, hscroll: bool) -> Self {
@@ -403,7 +395,10 @@ impl<'open> Window<'open> {
     /// See [`ScrollArea::drag_to_scroll`] for more.
     #[inline]
     pub fn drag_to_scroll(mut self, drag_to_scroll: bool) -> Self {
-        self.scroll = self.scroll.drag_to_scroll(drag_to_scroll);
+        self.scroll = self.scroll.scroll_source(ScrollSource {
+            drag: drag_to_scroll,
+            ..Default::default()
+        });
         self
     }
 
@@ -1217,7 +1212,7 @@ impl TitleBar {
             let button_rect = Rect::from_center_size(button_center, button_size);
             let button_rect = button_rect.round_ui();
 
-            ui.allocate_new_ui(UiBuilder::new().max_rect(button_rect), |ui| {
+            ui.scope_builder(UiBuilder::new().max_rect(button_rect), |ui| {
                 collapsing.show_default_button_with_size(ui, button_size);
             });
         }

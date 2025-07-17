@@ -5,31 +5,30 @@ use emath::GuiRounding as _;
 use epaint::mutex::RwLock;
 use std::{any::Any, hash::Hash, sync::Arc};
 
-use crate::close_tag::ClosableTag;
+use crate::ClosableTag;
 #[cfg(debug_assertions)]
 use crate::Stroke;
+use crate::containers::menu;
 use crate::{
+    Align, Color32, Context, CursorIcon, DragAndDrop, Id, InnerResponse, InputState, IntoAtoms,
+    LayerId, Memory, Order, Painter, PlatformOutput, Pos2, Rangef, Rect, Response, Rgba, RichText,
+    Sense, Style, TextStyle, TextWrapMode, UiBuilder, UiKind, UiStack, UiStackInfo, Vec2,
+    WidgetRect, WidgetText,
     containers::{CollapsingHeader, CollapsingResponse, Frame},
     ecolor::Hsva,
     emath, epaint,
     epaint::text::Fonts,
     grid,
     layout::{Direction, Layout},
-    menu,
-    menu::MenuState,
     pass_state,
     placer::Placer,
     pos2, style,
     util::IdTypeMap,
     vec2, widgets,
     widgets::{
-        color_picker, Button, Checkbox, DragValue, Hyperlink, Image, ImageSource, Label, Link,
-        RadioButton, SelectableLabel, Separator, Spinner, TextEdit, Widget,
+        Button, Checkbox, DragValue, Hyperlink, Image, ImageSource, Label, Link, RadioButton,
+        Separator, Spinner, TextEdit, Widget, color_picker,
     },
-    Align, Color32, Context, CursorIcon, DragAndDrop, Id, InnerResponse, InputState, LayerId,
-    Memory, Order, Painter, PlatformOutput, Pos2, Rangef, Rect, Response, Rgba, RichText, Sense,
-    Style, TextStyle, TextWrapMode, UiBuilder, UiKind, UiStack, UiStackInfo, Vec2, WidgetRect,
-    WidgetText,
 };
 // ----------------------------------------------------------------------------
 
@@ -99,7 +98,8 @@ pub struct Ui {
     sizing_pass: bool,
 
     /// Indicates whether this Ui belongs to a Menu.
-    menu_state: Option<Arc<RwLock<MenuState>>>,
+    #[expect(deprecated)]
+    menu_state: Option<Arc<RwLock<crate::menu::MenuState>>>,
 
     /// The [`UiStack`] for this [`Ui`].
     stack: Arc<UiStack>,
@@ -286,7 +286,7 @@ impl Ui {
             }
         }
 
-        debug_assert!(!max_rect.any_nan());
+        debug_assert!(!max_rect.any_nan(), "max_rect is NaN: {max_rect:?}");
         let stable_id = self.id.with(id_salt);
         let unique_id = stable_id.with(self.next_auto_id_salt);
         let next_auto_id_salt = unique_id.value().wrapping_add(1);
@@ -522,7 +522,7 @@ impl Ui {
         self.enabled = false;
         if self.is_visible() {
             self.painter
-                .set_fade_to_color(Some(self.visuals().fade_out_to_color()));
+                .multiply_opacity(self.visuals().disabled_alpha());
         }
     }
 
@@ -666,7 +666,7 @@ impl Ui {
     ///
     /// This is determined first by [`Style::wrap_mode`], and then by the layout of this [`Ui`].
     pub fn wrap_mode(&self) -> TextWrapMode {
-        #[allow(deprecated)]
+        #[expect(deprecated)]
         if let Some(wrap_mode) = self.style.wrap_mode {
             wrap_mode
         }
@@ -914,14 +914,20 @@ impl Ui {
     /// Set the minimum width of the ui.
     /// This can't shrink the ui, only make it larger.
     pub fn set_min_width(&mut self, width: f32) {
-        debug_assert!(0.0 <= width);
+        debug_assert!(
+            0.0 <= width,
+            "Negative width makes no sense, but got: {width}"
+        );
         self.placer.set_min_width(width);
     }
 
     /// Set the minimum height of the ui.
     /// This can't shrink the ui, only make it larger.
     pub fn set_min_height(&mut self, height: f32) {
-        debug_assert!(0.0 <= height);
+        debug_assert!(
+            0.0 <= height,
+            "Negative height makes no sense, but got: {height}"
+        );
         self.placer.set_min_height(height);
     }
 
@@ -1187,6 +1193,14 @@ impl Ui {
     /// [`crate::Area`] e.g. will return true from it's [`Response::should_close`] method.
     ///
     /// If you want to close a specific kind of container, use [`Ui::close_kind`] instead.
+    ///
+    /// Also note that this won't bubble up across [`crate::Area`]s. If needed, you can check
+    /// `response.should_close()` and close the parent manually. ([`menu`] does this for example).
+    ///
+    /// See also:
+    /// - [`Ui::close_kind`]
+    /// - [`Ui::should_close`]
+    /// - [`Ui::will_parent_close`]
     pub fn close(&self) {
         let tag = self.stack.iter().find_map(|stack| {
             stack
@@ -1207,6 +1221,11 @@ impl Ui {
     /// This is useful if you want to e.g. close a [`crate::Window`]. Since it contains a
     /// `Collapsible`, [`Ui::close`] would close the `Collapsible` instead.
     /// You can close the [`crate::Window`] by calling `ui.close_kind(UiKind::Window)`.
+    ///
+    /// See also:
+    /// - [`Ui::close`]
+    /// - [`Ui::should_close`]
+    /// - [`Ui::will_parent_close`]
     pub fn close_kind(&self, ui_kind: UiKind) {
         let tag = self
             .stack
@@ -1230,12 +1249,34 @@ impl Ui {
     /// Only works if the [`Ui`] was created with [`UiBuilder::closable`].
     ///
     /// You can also check via this [`Ui`]'s [`Response::should_close`].
+    ///
+    /// See also:
+    /// - [`Ui::will_parent_close`]
+    /// - [`Ui::close`]
+    /// - [`Ui::close_kind`]
+    /// - [`Response::should_close`]
     pub fn should_close(&self) -> bool {
         self.stack
             .info
             .tags
             .get_downcast(ClosableTag::NAME)
             .is_some_and(|tag: &ClosableTag| tag.should_close())
+    }
+
+    /// Will this [`Ui`] or any of its parents close this frame?
+    ///
+    /// See also
+    /// - [`Ui::should_close`]
+    /// - [`Ui::close`]
+    /// - [`Ui::close_kind`]
+    pub fn will_parent_close(&self) -> bool {
+        self.stack.iter().any(|stack| {
+            stack
+                .info
+                .tags
+                .get_downcast::<ClosableTag>(ClosableTag::NAME)
+                .is_some_and(|tag| tag.should_close())
+        })
     }
 }
 
@@ -1364,7 +1405,7 @@ impl Ui {
     fn allocate_space_impl(&mut self, desired_size: Vec2) -> Rect {
         let item_spacing = self.spacing().item_spacing;
         let frame_rect = self.placer.next_space(desired_size, item_spacing);
-        debug_assert!(!frame_rect.any_nan());
+        debug_assert!(!frame_rect.any_nan(), "frame_rect is nan in allocate_space");
         let widget_rect = self.placer.justify_and_align(frame_rect, desired_size);
 
         self.placer
@@ -1387,7 +1428,7 @@ impl Ui {
 
     /// Allocate a rect without interacting with it.
     pub fn advance_cursor_after_rect(&mut self, rect: Rect) -> Id {
-        debug_assert!(!rect.any_nan());
+        debug_assert!(!rect.any_nan(), "rect is nan in advance_cursor_after_rect");
         let rect = rect.round_ui();
 
         let item_spacing = self.spacing().item_spacing;
@@ -1459,11 +1500,14 @@ impl Ui {
         layout: Layout,
         add_contents: Box<dyn FnOnce(&mut Self) -> R + 'c>,
     ) -> InnerResponse<R> {
-        debug_assert!(desired_size.x >= 0.0 && desired_size.y >= 0.0);
+        debug_assert!(
+            desired_size.x >= 0.0 && desired_size.y >= 0.0,
+            "Negative desired size: {desired_size:?}"
+        );
         let item_spacing = self.spacing().item_spacing;
         let frame_rect = self.placer.next_space(desired_size, item_spacing);
         let child_rect = self.placer.justify_and_align(frame_rect, desired_size);
-        self.allocate_new_ui(
+        self.scope_dyn(
             UiBuilder::new().max_rect(child_rect).layout(layout),
             add_contents,
         )
@@ -1480,7 +1524,7 @@ impl Ui {
         max_rect: Rect,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_new_ui(UiBuilder::new().max_rect(max_rect), add_contents)
+        self.scope_builder(UiBuilder::new().max_rect(max_rect), add_contents)
     }
 
     /// Allocated space (`UiBuilder::max_rect`) and then add content to it.
@@ -1488,27 +1532,13 @@ impl Ui {
     /// If the contents overflow, more space will be allocated.
     /// When finished, the amount of space actually used (`min_rect`) will be allocated in the parent.
     /// So you can request a lot of space and then use less.
+    #[deprecated = "Use `scope_builder` instead"]
     pub fn allocate_new_ui<R>(
         &mut self,
         ui_builder: UiBuilder,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_new_ui_dyn(ui_builder, Box::new(add_contents))
-    }
-
-    fn allocate_new_ui_dyn<'c, R>(
-        &mut self,
-        ui_builder: UiBuilder,
-        add_contents: Box<dyn FnOnce(&mut Self) -> R + 'c>,
-    ) -> InnerResponse<R> {
-        let mut child_ui = self.new_child(ui_builder);
-        let inner = add_contents(&mut child_ui);
-        let rect = child_ui.min_rect();
-        let item_spacing = self.spacing().item_spacing;
-        self.placer.advance_after_rects(rect, rect, item_spacing);
-        register_rect(self, rect);
-        let response = self.interact(rect, child_ui.unique_id, Sense::hover());
-        InnerResponse::new(inner, response)
+        self.scope_dyn(ui_builder, Box::new(add_contents))
     }
 
     /// Convenience function to get a region to paint on.
@@ -1714,7 +1744,7 @@ impl Ui {
     ///
     /// See also [`Self::add`] and [`Self::add_sized`].
     pub fn put(&mut self, max_rect: Rect, widget: impl Widget) -> Response {
-        self.allocate_new_ui(
+        self.scope_builder(
             UiBuilder::new()
                 .max_rect(max_rect)
                 .layout(Layout::centered_and_justified(Direction::TopDown)),
@@ -2025,8 +2055,8 @@ impl Ui {
     /// ```
     #[must_use = "You should check if the user clicked this with `if ui.button(…).clicked() { … } "]
     #[inline]
-    pub fn button(&mut self, text: impl Into<WidgetText>) -> Response {
-        Button::new(text).ui(self)
+    pub fn button<'a>(&mut self, atoms: impl IntoAtoms<'a>) -> Response {
+        Button::new(atoms).ui(self)
     }
 
     /// A button as small as normal body text.
@@ -2043,17 +2073,17 @@ impl Ui {
     ///
     /// See also [`Self::toggle_value`].
     #[inline]
-    pub fn checkbox(&mut self, checked: &mut bool, text: impl Into<WidgetText>) -> Response {
-        Checkbox::new(checked, text).ui(self)
+    pub fn checkbox<'a>(&mut self, checked: &'a mut bool, atoms: impl IntoAtoms<'a>) -> Response {
+        Checkbox::new(checked, atoms).ui(self)
     }
 
-    /// Acts like a checkbox, but looks like a [`SelectableLabel`].
+    /// Acts like a checkbox, but looks like a [`Button::selectable`].
     ///
     /// Click to toggle to bool.
     ///
     /// See also [`Self::checkbox`].
-    pub fn toggle_value(&mut self, selected: &mut bool, text: impl Into<WidgetText>) -> Response {
-        let mut response = self.selectable_label(*selected, text);
+    pub fn toggle_value<'a>(&mut self, selected: &mut bool, atoms: impl IntoAtoms<'a>) -> Response {
+        let mut response = self.selectable_label(*selected, atoms);
         if response.clicked() {
             *selected = !*selected;
             response.mark_changed();
@@ -2065,8 +2095,8 @@ impl Ui {
     /// Often you want to use [`Self::radio_value`] instead.
     #[must_use = "You should check if the user clicked this with `if ui.radio(…).clicked() { … } "]
     #[inline]
-    pub fn radio(&mut self, selected: bool, text: impl Into<WidgetText>) -> Response {
-        RadioButton::new(selected, text).ui(self)
+    pub fn radio<'a>(&mut self, selected: bool, atoms: impl IntoAtoms<'a>) -> Response {
+        RadioButton::new(selected, atoms).ui(self)
     }
 
     /// Show a [`RadioButton`]. It is selected if `*current_value == selected_value`.
@@ -2088,13 +2118,13 @@ impl Ui {
     /// }
     /// # });
     /// ```
-    pub fn radio_value<Value: PartialEq>(
+    pub fn radio_value<'a, Value: PartialEq>(
         &mut self,
         current_value: &mut Value,
         alternative: Value,
-        text: impl Into<WidgetText>,
+        atoms: impl IntoAtoms<'a>,
     ) -> Response {
-        let mut response = self.radio(*current_value == alternative, text);
+        let mut response = self.radio(*current_value == alternative, atoms);
         if response.clicked() && *current_value != alternative {
             *current_value = alternative;
             response.mark_changed();
@@ -2104,10 +2134,10 @@ impl Ui {
 
     /// Show a label which can be selected or not.
     ///
-    /// See also [`SelectableLabel`] and [`Self::toggle_value`].
+    /// See also [`Button::selectable`] and [`Self::toggle_value`].
     #[must_use = "You should check if the user clicked this with `if ui.selectable_label(…).clicked() { … } "]
-    pub fn selectable_label(&mut self, checked: bool, text: impl Into<WidgetText>) -> Response {
-        SelectableLabel::new(checked, text).ui(self)
+    pub fn selectable_label<'a>(&mut self, checked: bool, text: impl IntoAtoms<'a>) -> Response {
+        Button::selectable(checked, text).ui(self)
     }
 
     /// Show selectable text. It is selected if `*current_value == selected_value`.
@@ -2115,12 +2145,12 @@ impl Ui {
     ///
     /// Example: `ui.selectable_value(&mut my_enum, Enum::Alternative, "Alternative")`.
     ///
-    /// See also [`SelectableLabel`] and [`Self::toggle_value`].
-    pub fn selectable_value<Value: PartialEq>(
+    /// See also [`Button::selectable`] and [`Self::toggle_value`].
+    pub fn selectable_value<'a, Value: PartialEq>(
         &mut self,
         current_value: &mut Value,
         selected_value: Value,
-        text: impl Into<WidgetText>,
+        text: impl IntoAtoms<'a>,
     ) -> Response {
         let mut response = self.selectable_label(*current_value == selected_value, text);
         if response.clicked() && *current_value != selected_value {
@@ -2219,18 +2249,21 @@ impl Ui {
 /// # Colors
 impl Ui {
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     pub fn color_edit_button_srgba(&mut self, srgba: &mut Color32) -> Response {
         color_picker::color_edit_button_srgba(self, srgba, color_picker::Alpha::BlendOrAdditive)
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     pub fn color_edit_button_hsva(&mut self, hsva: &mut Hsva) -> Response {
         color_picker::color_edit_button_hsva(self, hsva, color_picker::Alpha::BlendOrAdditive)
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     /// The given color is in `sRGB` space.
     pub fn color_edit_button_srgb(&mut self, srgb: &mut [u8; 3]) -> Response {
@@ -2238,6 +2271,7 @@ impl Ui {
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     /// The given color is in linear RGB space.
     pub fn color_edit_button_rgb(&mut self, rgb: &mut [f32; 3]) -> Response {
@@ -2245,6 +2279,7 @@ impl Ui {
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     /// The given color is in `sRGBA` space with premultiplied alpha
     pub fn color_edit_button_srgba_premultiplied(&mut self, srgba: &mut [u8; 4]) -> Response {
@@ -2255,6 +2290,7 @@ impl Ui {
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     /// The given color is in `sRGBA` space without premultiplied alpha.
     /// If unsure, what "premultiplied alpha" is, then this is probably the function you want to use.
@@ -2267,6 +2303,7 @@ impl Ui {
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     /// The given color is in linear RGBA space with premultiplied alpha
     pub fn color_edit_button_rgba_premultiplied(&mut self, rgba_premul: &mut [f32; 4]) -> Response {
@@ -2286,6 +2323,7 @@ impl Ui {
     }
 
     /// Shows a button with the given color.
+    ///
     /// If the user clicks the button, a full color picker is shown.
     /// The given color is in linear RGBA space without premultiplied alpha.
     /// If unsure, what "premultiplied alpha" is, then this is probably the function you want to use.
@@ -2605,7 +2643,7 @@ impl Ui {
     /// See also [`Self::with_layout`] for more options.
     #[inline]
     pub fn vertical<R>(&mut self, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
-        self.allocate_new_ui(
+        self.scope_builder(
             UiBuilder::new().layout(Layout::top_down(Align::Min)),
             add_contents,
         )
@@ -2627,7 +2665,7 @@ impl Ui {
         &mut self,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_new_ui(
+        self.scope_builder(
             UiBuilder::new().layout(Layout::top_down(Align::Center)),
             add_contents,
         )
@@ -2648,7 +2686,7 @@ impl Ui {
         &mut self,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_new_ui(
+        self.scope_builder(
             UiBuilder::new().layout(Layout::top_down(Align::Center).with_cross_justify(true)),
             add_contents,
         )
@@ -2674,7 +2712,7 @@ impl Ui {
         layout: Layout,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_new_ui(UiBuilder::new().layout(layout), add_contents)
+        self.scope_builder(UiBuilder::new().layout(layout), add_contents)
     }
 
     /// This will make the next added widget centered and justified in the available space.
@@ -2684,7 +2722,7 @@ impl Ui {
         &mut self,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_new_ui(
+        self.scope_builder(
             UiBuilder::new().layout(Layout::centered_and_justified(Direction::TopDown)),
             add_contents,
         )
@@ -2925,8 +2963,8 @@ impl Ui {
 
         if is_anything_being_dragged && !can_accept_what_is_being_dragged {
             // When dragging something else, show that it can't be dropped here:
-            fill = self.visuals().gray_out(fill);
-            stroke.color = self.visuals().gray_out(stroke.color);
+            fill = self.visuals().disable(fill);
+            stroke.color = self.visuals().disable(stroke.color);
         }
 
         frame.frame.fill = fill;
@@ -2977,7 +3015,11 @@ impl Ui {
         self.close_kind(UiKind::Menu);
     }
 
-    pub(crate) fn set_menu_state(&mut self, menu_state: Option<Arc<RwLock<MenuState>>>) {
+    #[expect(deprecated)]
+    pub(crate) fn set_menu_state(
+        &mut self,
+        menu_state: Option<Arc<RwLock<crate::menu::MenuState>>>,
+    ) {
         self.menu_state = menu_state;
     }
 
@@ -2999,16 +3041,17 @@ impl Ui {
     /// ```
     ///
     /// See also: [`Self::close`] and [`Response::context_menu`].
-    pub fn menu_button<R>(
+    pub fn menu_button<'a, R>(
         &mut self,
-        title: impl Into<WidgetText>,
+        atoms: impl IntoAtoms<'a>,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<Option<R>> {
-        if let Some(menu_state) = self.menu_state.clone() {
-            menu::submenu_button(self, menu_state, title, add_contents)
+        let (response, inner) = if menu::is_in_menu(self) {
+            menu::SubMenuButton::new(atoms).ui(self, add_contents)
         } else {
-            menu::menu_button(self, title, add_contents)
-        }
+            menu::MenuButton::new(atoms).ui(self, add_contents)
+        };
+        InnerResponse::new(inner.map(|i| i.inner), response)
     }
 
     /// Create a menu button with an image that when clicked will show the given menu.
@@ -3037,11 +3080,15 @@ impl Ui {
         image: impl Into<Image<'a>>,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<Option<R>> {
-        if let Some(menu_state) = self.menu_state.clone() {
-            menu::submenu_button(self, menu_state, String::new(), add_contents)
+        let (response, inner) = if menu::is_in_menu(self) {
+            menu::SubMenuButton::from_button(
+                Button::image(image).right_text(menu::SubMenuButton::RIGHT_ARROW),
+            )
+            .ui(self, add_contents)
         } else {
-            menu::menu_custom_button(self, Button::image(image), add_contents)
-        }
+            menu::MenuButton::from_button(Button::image(image)).ui(self, add_contents)
+        };
+        InnerResponse::new(inner.map(|i| i.inner), response)
     }
 
     /// Create a menu button with an image and a text that when clicked will show the given menu.
@@ -3071,11 +3118,16 @@ impl Ui {
         title: impl Into<WidgetText>,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<Option<R>> {
-        if let Some(menu_state) = self.menu_state.clone() {
-            menu::submenu_button(self, menu_state, title, add_contents)
+        let (response, inner) = if menu::is_in_menu(self) {
+            menu::SubMenuButton::from_button(
+                Button::image_and_text(image, title).right_text(menu::SubMenuButton::RIGHT_ARROW),
+            )
+            .ui(self, add_contents)
         } else {
-            menu::menu_custom_button(self, Button::image_and_text(image, title), add_contents)
-        }
+            menu::MenuButton::from_button(Button::image_and_text(image, title))
+                .ui(self, add_contents)
+        };
+        InnerResponse::new(inner.map(|i| i.inner), response)
     }
 }
 
@@ -3104,7 +3156,7 @@ impl Drop for Ui {
 /// Show this rectangle to the user if certain debug options are set.
 #[cfg(debug_assertions)]
 fn register_rect(ui: &Ui, rect: Rect) {
-    use emath::{Align2, GuiRounding};
+    use emath::{Align2, GuiRounding as _};
 
     let debug = ui.style().debug;
 

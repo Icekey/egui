@@ -1,4 +1,5 @@
-//! Menu bar functionality (very basic so far).
+#![allow(deprecated)]
+//! Deprecated menu API - Use [`crate::containers::menu`] instead.
 //!
 //! Usage:
 //! ```
@@ -16,14 +17,13 @@
 //! ```
 
 use super::{
-    style::WidgetVisuals, Align, Context, Id, InnerResponse, PointerState, Pos2, Rect, Response,
-    Sense, TextStyle, Ui, Vec2,
+    Align, Context, Id, InnerResponse, PointerState, Pos2, Rect, Response, Sense, TextStyle, Ui,
+    Vec2, style::WidgetVisuals,
 };
 use crate::{
-    epaint, vec2,
+    Align2, Area, Color32, Frame, Key, LayerId, Layout, NumExt as _, Order, Stroke, Style,
+    TextWrapMode, UiKind, WidgetText, epaint, vec2,
     widgets::{Button, ImageButton},
-    Align2, Area, Color32, Frame, Key, LayerId, Layout, NumExt, Order, Stroke, Style, TextWrapMode,
-    UiKind, WidgetText,
 };
 use epaint::mutex::RwLock;
 use std::sync::Arc;
@@ -75,16 +75,19 @@ impl std::ops::DerefMut for BarState {
 }
 
 fn set_menu_style(style: &mut Style) {
-    style.spacing.button_padding = vec2(2.0, 0.0);
-    style.visuals.widgets.active.bg_stroke = Stroke::NONE;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::NONE;
-    style.visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-    style.visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+    if style.compact_menu_style {
+        style.spacing.button_padding = vec2(2.0, 0.0);
+        style.visuals.widgets.active.bg_stroke = Stroke::NONE;
+        style.visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+        style.visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+        style.visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+    }
 }
 
 /// The menu bar goes well in a [`crate::TopBottomPanel::top`],
 /// but can also be placed in a [`crate::Window`].
 /// In the latter case you may want to wrap it in [`Frame`].
+#[deprecated = "Use `egui::MenuBar::new().ui(` instead"]
 pub fn bar<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
     ui.horizontal(|ui| {
         set_menu_style(ui.style_mut());
@@ -146,7 +149,7 @@ pub fn menu_image_button<R>(
 /// Opens on hover.
 ///
 /// Returns `None` if the menu is not open.
-pub(crate) fn submenu_button<R>(
+pub fn submenu_button<R>(
     ui: &mut Ui,
     parent_state: Arc<RwLock<MenuState>>,
     title: impl Into<WidgetText>,
@@ -267,7 +270,7 @@ fn stationary_menu_button_impl<'c, R>(
 pub(crate) const CONTEXT_MENU_ID_STR: &str = "__egui::context_menu";
 
 /// Response to secondary clicks (right-clicks) by showing the given menu.
-pub(crate) fn context_menu(
+pub fn context_menu(
     response: &Response,
     add_contents: impl FnOnce(&mut Ui),
 ) -> Option<InnerResponse<()>> {
@@ -282,7 +285,7 @@ pub(crate) fn context_menu(
 }
 
 /// Returns `true` if the context menu is opened for this widget.
-pub(crate) fn context_menu_opened(response: &Response) -> bool {
+pub fn context_menu_opened(response: &Response) -> bool {
     let menu_id = Id::new(CONTEXT_MENU_ID_STR);
     let bar_state = BarState::load(&response.ctx, menu_id);
     bar_state.is_menu_open(response.id)
